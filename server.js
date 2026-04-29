@@ -1,9 +1,9 @@
 'use strict';
 
 // ─── CONFIG (每人修改這三行) ────────────────────────────────────────────────────
-const DB_PATH  = './todo.db';            // SQLite 檔案路徑（區域網路共享路徑）
-const PORT     = 3000;                   // server 監聽 port
-const USERNAME = 'Alice';               // 當前使用者名稱
+const DB_PATH  = process.env.DB_PATH   || './todo.db'; // SQLite 檔案路徑（區域網路共享路徑）
+const PORT     = parseInt(process.env.PORT)   || 3000; // server 監聽 port
+const USERNAME = process.env.TODO_USER || 'Alice';     // 當前使用者名稱（env: TODO_USER）
 // ──────────────────────────────────────────────────────────────────────────────
 
 const express       = require('express');
@@ -16,9 +16,9 @@ const ExcelJS       = require('exceljs');
 // ─── DATABASE ─────────────────────────────────────────────────────────────────
 
 const db = new DatabaseSync(DB_PATH);
+db.exec('PRAGMA busy_timeout = 10000'); // 先設 timeout，後續 PRAGMA/寫入才能自動重試
 db.exec('PRAGMA journal_mode = WAL');
 db.exec('PRAGMA foreign_keys = ON');
-db.exec('PRAGMA busy_timeout = 10000'); // 等待最多 10 秒（SQLite 內建指數退避）
 
 db.exec(`
   CREATE TABLE IF NOT EXISTS items (
