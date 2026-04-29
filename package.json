@@ -1,0 +1,15 @@
+{
+  "name": "team-todo",
+  "version": "1.0.0",
+  "description": "Team todo & progress tracker with shared SQLite DB",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "exceljs": "^4.4.0",
+    "express": "^4.19.2",
+    "uuid": "^9.0.1",
+    "ws": "^8.17.1"
+  }
+}
