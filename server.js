@@ -494,6 +494,18 @@ function renderUserList() {
   }
 }
 
+function computeMaxDepth(items) {
+  const depthOf = {};
+  const byId = Object.fromEntries(items.map(i => [i.id, i]));
+  function getDepth(id) {
+    if (id in depthOf) return depthOf[id];
+    const item = byId[id];
+    depthOf[id] = item?.parent_id ? getDepth(item.parent_id) + 1 : 0;
+    return depthOf[id];
+  }
+  return items.reduce((max, i) => Math.max(max, getDepth(i.id)), 0);
+}
+
 function renderItems() {
   const tag = document.activeElement?.tagName;
   if (tag === 'INPUT' || tag === 'SELECT') return;
@@ -506,6 +518,11 @@ function renderItems() {
   document.getElementById('viewing-label').textContent = currentUser + (isOwn ? ' (我)' : '');
 
   const userItems = allItems.filter(i => i.owner === currentUser);
+
+  const maxD = Math.min(computeMaxDepth(userItems), 8);
+  const opsWidth = maxD * 24 + 64;
+  document.documentElement.style.setProperty('--col-ops', opsWidth + 'px');
+
   const root = document.getElementById('items-root');
   root.innerHTML = '';
 
