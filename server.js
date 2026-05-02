@@ -9,13 +9,13 @@ const USERNAME = process.env.TODO_USER || 'Alice';     // 當前使用者名稱�
 const express       = require('express');
 const http          = require('http');
 const { WebSocketServer } = require('ws');
-const { DatabaseSync } = require('node:sqlite');
+const Database       = require('better-sqlite3');
 const { v4: uuidv4 } = require('uuid');
 const ExcelJS       = require('exceljs');
 
 // ─── DATABASE ─────────────────────────────────────────────────────────────────
 
-const db = new DatabaseSync(DB_PATH);
+const db = new Database(DB_PATH);
 db.exec('PRAGMA busy_timeout = 10000'); // 先設 timeout，後續 PRAGMA/寫入才能自動重試
 db.exec('PRAGMA journal_mode = WAL');
 db.exec('PRAGMA foreign_keys = ON');
