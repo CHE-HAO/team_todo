@@ -3,7 +3,7 @@
 // ─── CONFIG (每人修改這三行) ────────────────────────────────────────────────────
 const DB_PATH  = process.env.DB_PATH   || './todo.db'; // SQLite 檔案路徑（區域網路共享路徑）
 const PORT     = parseInt(process.env.PORT)   || 3000; // server 監聽 port
-const USERNAME = process.env.TODO_USER || 'Alice';     // 當前使用者名稱（env: TODO_USER）
+const USERNAME = process.env.TODO_USER || 'Justin';     // 當前使用者名稱（env: TODO_USER）
 // ──────────────────────────────────────────────────────────────────────────────
 
 const express       = require('express');
@@ -30,6 +30,7 @@ db.exec(`
     status      TEXT NOT NULL DEFAULT '',
     result_plan TEXT NOT NULL DEFAULT '',
     risk_help   TEXT NOT NULL DEFAULT '',
+    due_date    TEXT NOT NULL DEFAULT '',
     priority    TEXT NOT NULL DEFAULT '中',
     progress    INTEGER NOT NULL DEFAULT 0,
     note        TEXT NOT NULL DEFAULT '',
@@ -37,6 +38,9 @@ db.exec(`
     created_at  INTEGER NOT NULL
   )
 `);
+
+try { db.exec("ALTER TABLE items ADD COLUMN due_date TEXT NOT NULL DEFAULT ''"); } catch {}
+
 
 // ─── EXCLUSIVE TRANSACTION WITH RETRY ─────────────────────────────────────────
 
@@ -96,7 +100,7 @@ wss.on('connection', (ws) => {
   ws.on('error', () => clients.delete(ws));
 });
 
-const ALLOWED_FIELDS = ['task', 'status', 'result_plan', 'risk_help', 'priority', 'progress', 'note'];
+const ALLOWED_FIELDS = ['task', 'status', 'result_plan', 'risk_help', 'due_date', 'priority', 'progress', 'note'];
 
 function handleMessage(ws, msg) {
   switch (msg.type) {
@@ -217,6 +221,7 @@ app.get('/export', async (req, res) => {
       { header: '目前進度',         key: 'status',      width: 25 },
       { header: '成果/下一步計畫',   key: 'result_plan', width: 30 },
       { header: '風險/需要協助事項', key: 'risk_help',   width: 30 },
+      { header: '預定完成日期',     key: 'due_date',    width: 14 },
       { header: '優先順序',         key: 'priority',    width: 10 },
       { header: '進度%',            key: 'progress',    width: 8  },
       { header: '備註',             key: 'note',        width: 25 },
@@ -235,6 +240,7 @@ app.get('/export', async (req, res) => {
           status:      item.status      ?? '',
           result_plan: item.result_plan ?? '',
           risk_help:   item.risk_help   ?? '',
+          due_date:    item.due_date    ?? '',
           priority:    item.priority    ?? '',
           progress:    item.progress    ?? 0,
           note:        item.note        ?? '',
@@ -316,6 +322,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;font-siz
   --col-status:160px;
   --col-result:200px;
   --col-risk:180px;
+  --col-due:120px;
   --col-priority:78px;
   --col-progress:78px;
   --col-note:160px;
@@ -344,6 +351,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;font-siz
 .c-status{width:var(--col-status);min-width:var(--col-status);flex-shrink:0;display:flex;align-items:center}
 .c-result{width:var(--col-result);min-width:var(--col-result);flex-shrink:0;display:flex;align-items:center}
 .c-risk{width:var(--col-risk);min-width:var(--col-risk);flex-shrink:0;display:flex;align-items:center}
+.c-due{width:var(--col-due);min-width:var(--col-due);flex-shrink:0;display:flex;align-items:center}
 .c-priority{width:var(--col-priority);min-width:var(--col-priority);flex-shrink:0;display:flex;align-items:center}
 .c-progress{width:var(--col-progress);min-width:var(--col-progress);flex-shrink:0;display:flex;align-items:center}
 .c-note{width:var(--col-note);min-width:var(--col-note);flex-shrink:0;display:flex;align-items:center}
@@ -362,12 +370,12 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;font-siz
 .sortable-drag{opacity:.9}
 .sortable-group{min-height:2px}
 
-input[type=text],input[type=number],select{
+input[type=text],input[type=number],input[type=date],select{
   width:100%;border:none;background:transparent;
   padding:5px 6px;font-size:13px;color:#333;
   outline:none;font-family:inherit;
 }
-input[type=text]:focus,input[type=number]:focus,select:focus{background:#e8f0fe;border-radius:3px}
+input[type=text]:focus,input[type=number]:focus,input[type=date]:focus,select:focus{background:#e8f0fe;border-radius:3px}
 input[type=number]{-moz-appearance:textfield}
 input[type=number]::-webkit-inner-spin-button{opacity:1}
 select{cursor:pointer}
@@ -415,6 +423,7 @@ select{cursor:pointer}
         <div style="width:var(--col-status)">目前進度</div>
         <div style="width:var(--col-result)">成果/下一步計畫</div>
         <div style="width:var(--col-risk)">風險/需要協助事項</div>
+        <div style="width:var(--col-due)">預定完成日期</div>
         <div style="width:var(--col-priority)">優先順序</div>
         <div style="width:var(--col-progress)">進度%</div>
         <div style="width:var(--col-note)">備註</div>
@@ -613,6 +622,7 @@ function buildRow(item, isOwn, depth) {
     { key: 'status',      cls: 'c-status',   type: 'text'   },
     { key: 'result_plan', cls: 'c-result',   type: 'text'   },
     { key: 'risk_help',   cls: 'c-risk',     type: 'text'   },
+    { key: 'due_date',    cls: 'c-due',      type: 'date'   },
     { key: 'priority',    cls: 'c-priority', type: 'select', opts: ['高','中','低'] },
     { key: 'progress',    cls: 'c-progress', type: 'number' },
     { key: 'note',        cls: 'c-note',     type: 'text'   },
