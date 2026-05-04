@@ -8,74 +8,147 @@
 
 ### 簡介
 
-team_todo 是一套輕量級的團隊工作追蹤工具。每位成員在自己的電腦上跑一個本地 Node.js server，所有 server 共用同一個放在網路共享磁碟上的 SQLite 檔案，即可即時協作、互看進度。
+team_todo 是一套輕量級的團隊工作追蹤工具，支援三種執行模式：
+
+| 模式 | 說明 |
+|------|------|
+| **本地 SQLite** | 單人或共享 SQLite 檔案（舊有模式，向下相容） |
+| **本地 JSON** | 單人使用，以 JSON 檔案儲存 |
+| **伺服器模式** | 多人共用，所有人連線至同一台 `server.js` |
 
 ### 系統需求
 
-| 項目 | 版本需求 |
-|------|---------|
-| Node.js | 20.x（建議）或 22.x+ |
+| 項目 | 需求 |
+|------|------|
+| Node.js | 20.x 以上（需支援全域 `fetch`） |
 | 作業系統 | macOS / Linux / Windows |
-| 網路 | 所有成員需能存取共用 SQLite 檔案（網路磁碟） |
 
 ### 架構概述
 
 ```
-成員 A (localhost:3000)  ─┐
-成員 B (localhost:3001)  ─┼──► 共用 SQLite (網路磁碟)
-成員 C (localhost:3002)  ─┘
-        │
-        └─ 瀏覽器透過 WebSocket 即時更新
-           每 10 秒自動跨機器同步
+伺服器模式：
+  [瀏覽器] ─WS─► [client.js 本地 :3000] ─REST API─► [server.js 共享 :8080]
+                                          ◄─WS sync_all──────────────────────
+
+本地模式：
+  [瀏覽器] ─WS─► [client.js 本地 :3000] ─► SQLite / JSON 本地檔案
 ```
 
-- **單一檔案**：全部後端邏輯與前端 HTML 都在 `server.js`
-- **WAL + 排他鎖**：多 server 同時寫入時透過 `BEGIN EXCLUSIVE` 避免資料損毀
 - **衝突偵測**：每次更新攜帶 `updated_at` 時間戳，若伺服器端資料較新則拒絕並通知 client 刷新
-- **即時同步**：同機器靠 WebSocket broadcast；跨機器靠每 10 秒重讀 DB
+- **即時同步**：同機器靠 WebSocket broadcast；跨機器（本地模式）靠每 10 秒重讀儲存檔；伺服器模式靠 server.js 主動推送
+- **WAL + 排他鎖**（SQLite）：`BEGIN EXCLUSIVE` 避免多寫入者資料損毀
 
-### 安裝與啟動
+---
+
+### 安裝
 
 ```bash
-# 1. clone 專案（node_modules 已 vendored，不需 npm install）
 git clone <repo-url>
 cd team_todo
+# node_modules 已 vendored，不需 npm install
+```
 
-# 2. 修改 server.js 頂端三個設定（或用環境變數）
-#    DB_PATH  = 指向網路共享的 .db 檔案路徑
-#    PORT     = 選一個本機未佔用的 port
-#    USERNAME = 你自己的名字
+---
 
-# 3. 啟動
-node server.js
+### 各模式啟動方式
+
+#### 1. 本地 SQLite 模式（預設）
+
+與舊版行為完全相同，適合單人使用或透過網路共享磁碟多人協作。
+
+```bash
+node client.js
 # 或
 npm start
 ```
 
-啟動後終端機會顯示：
+**設定（選擇其一）：**
+
+直接修改 `client.js` 頂端：
+```js
+const PORT     = 3000;
+const MODE     = 'local-sqlite';
+const PATH     = './todo.db';      // 可改為網路磁碟路徑
+const USERNAME = 'Justin';
 ```
-✓ Server: http://localhost:3000
-  User: Alice
-  DB:   ./todo.db
+
+或使用環境變數：
+```bash
+PORT=3001 TODO_PATH=/Volumes/share/team.db TODO_USER=Alice node client.js
+```
+
+---
+
+#### 2. 本地 JSON 模式
+
+以 JSON 檔案取代 SQLite，其餘行為相同。
+
+```bash
+TODO_MODE=local-json TODO_PATH=./todo.json TODO_USER=Alice node client.js
+```
+
+---
+
+#### 3. 伺服器模式（多人共用）
+
+**步驟 1：啟動共享伺服器（只需一台機器執行）**
+
+```bash
+node server.js
+# 或
+npm run server
+```
+
+設定（修改 `server.js` 頂端或使用環境變數）：
+```js
+const PORT = 8080;
+const MODE = 'sqlite';      // 'sqlite' 或 'json'
+const PATH = './shared.db'; // 資料儲存路徑
+```
+
+```bash
+PORT=8080 TODO_MODE=sqlite TODO_PATH=./shared.db node server.js
+```
+
+啟動後顯示：
+```
+✓ Server: http://localhost:8080
+  Mode:   SQLite → ./shared.db
+  WS:     ws://localhost:8080/ws
+```
+
+**步驟 2：每位成員各自啟動 client.js**
+
+```bash
+TODO_MODE=server TODO_PATH=http://192.168.1.100:8080 TODO_USER=Alice PORT=3000 node client.js
+```
+
+`TODO_PATH` 填入 server.js 的 HTTP 位址。每位成員可用不同的本機 PORT，但指向同一個 server。
+
+---
+
+### 啟動訊息範例
+
+```
+✓ Client: http://localhost:3000
+  User:   Alice
+  Mode:   伺服器模式 → http://192.168.1.100:8080
 ```
 
 用瀏覽器開啟顯示的網址即可使用。
 
-### 設定方式
+---
 
-**方式一：直接編輯 `server.js` 頂端**
+### 環境變數對照表
 
-```js
-const DB_PATH  = './todo.db';   // 改為網路磁碟路徑，如 /Volumes/share/team.db
-const PORT     = 3000;          // 每人選不同 port（若在同一台機器）
-const USERNAME = 'Alice';       // 改為自己的名字
-```
+| 變數 | 預設值 | 說明 |
+|------|--------|------|
+| `PORT` | `3000`（client） / `8080`（server） | 監聽 port |
+| `TODO_MODE` | `local-sqlite`（client） / `sqlite`（server） | 執行模式 |
+| `TODO_PATH` | `./todo.db`（client） / `./shared.db`（server） | 資料路徑或 server URL |
+| `TODO_USER` | `Justin` | 使用者名稱（僅 client 使用） |
 
-**方式二：環境變數**
-
-```bash
-DB_PATH=/Volumes/share/team.db TODO_USER=Bob PORT=3001 node server.js
-```
+---
 
 ### 操作說明
 
@@ -116,81 +189,154 @@ DB_PATH=/Volumes/share/team.db TODO_USER=Bob PORT=3001 node server.js
 
 ### Overview
 
-team_todo is a lightweight team task tracker. Each member runs a local Node.js server on their own machine. All servers share a single SQLite file stored on a network drive, enabling real-time collaboration and visibility across the team.
+team_todo is a lightweight team task tracker that supports three operating modes:
+
+| Mode | Description |
+|------|-------------|
+| **local-sqlite** | Single-user or shared SQLite file (backward compatible with old setup) |
+| **local-json** | Single-user, JSON file storage |
+| **server** | Multi-user, everyone connects to a shared `server.js` |
 
 ### Requirements
 
-| Item | Version |
-|------|---------|
-| Node.js | 20.x (recommended) or 22.x+ |
+| Item | Requirement |
+|------|-------------|
+| Node.js | 20.x or above (needs global `fetch`) |
 | OS | macOS / Linux / Windows |
-| Network | All members must have access to the shared SQLite file (network drive) |
 
 ### Architecture
 
 ```
-Member A (localhost:3000)  ─┐
-Member B (localhost:3001)  ─┼──► Shared SQLite (network drive)
-Member C (localhost:3002)  ─┘
-        │
-        └─ Browser updated in real-time via WebSocket
-           Cross-machine sync every 10 seconds
+Server mode:
+  [Browser] ─WS─► [client.js local :3000] ─REST API─► [server.js shared :8080]
+                                            ◄─WS sync_all──────────────────────
+
+Local mode:
+  [Browser] ─WS─► [client.js local :3000] ─► SQLite / JSON local file
 ```
 
-- **Single file**: All backend logic and frontend HTML live in `server.js`
-- **WAL + exclusive lock**: Uses `BEGIN EXCLUSIVE` to prevent data corruption when multiple servers write concurrently
 - **Conflict detection**: Each update carries an `updated_at` timestamp; if the server's record is newer, the write is rejected and the client is notified to refresh
-- **Real-time sync**: Same-machine via WebSocket broadcast; cross-machine via DB re-read every 10 seconds
+- **Real-time sync**: Same-machine via WebSocket broadcast; cross-machine (local mode) via 10-second DB re-read; server mode via server.js push
+- **WAL + exclusive lock** (SQLite): `BEGIN EXCLUSIVE` prevents corruption under concurrent writes
 
-### Installation & Startup
+---
+
+### Installation
 
 ```bash
-# 1. Clone the repo (node_modules is vendored — no npm install needed)
 git clone <repo-url>
 cd team_todo
+# node_modules is vendored — no npm install needed
+```
 
-# 2. Edit the three constants at the top of server.js (or use env vars)
-#    DB_PATH  = path to the shared .db file on the network drive
-#    PORT     = any free local port
-#    USERNAME = your name
+---
 
-# 3. Start the server
-node server.js
+### Startup by Mode
+
+#### 1. Local SQLite Mode (default)
+
+Identical to the old behavior. Works for solo use or shared network drive collaboration.
+
+```bash
+node client.js
 # or
 npm start
 ```
 
-On startup the terminal will show:
-```
-✓ Server: http://localhost:3000
-  User: Alice
-  DB:   ./todo.db
-```
+**Configuration (choose one):**
 
-Open the URL in your browser to use the app.
-
-### Configuration
-
-**Option 1: Edit the top of `server.js`**
-
+Edit the top of `client.js`:
 ```js
-const DB_PATH  = './todo.db';   // e.g. /Volumes/share/team.db
-const PORT     = 3000;          // each member picks a free port
-const USERNAME = 'Alice';       // your name
+const PORT     = 3000;
+const MODE     = 'local-sqlite';
+const PATH     = './todo.db';      // or a network drive path
+const USERNAME = 'Justin';
 ```
 
-**Option 2: Environment variables**
+Or use environment variables:
+```bash
+PORT=3001 TODO_PATH=/Volumes/share/team.db TODO_USER=Alice node client.js
+```
+
+---
+
+#### 2. Local JSON Mode
+
+Uses a JSON file instead of SQLite; otherwise identical.
 
 ```bash
-DB_PATH=/Volumes/share/team.db TODO_USER=Bob PORT=3001 node server.js
+TODO_MODE=local-json TODO_PATH=./todo.json TODO_USER=Alice node client.js
 ```
+
+---
+
+#### 3. Server Mode (multi-user)
+
+**Step 1: Start the shared server (one machine only)**
+
+```bash
+node server.js
+# or
+npm run server
+```
+
+Configure by editing the top of `server.js` or using environment variables:
+```js
+const PORT = 8080;
+const MODE = 'sqlite';      // 'sqlite' or 'json'
+const PATH = './shared.db';
+```
+
+```bash
+PORT=8080 TODO_MODE=sqlite TODO_PATH=./shared.db node server.js
+```
+
+On startup:
+```
+✓ Server: http://localhost:8080
+  Mode:   SQLite → ./shared.db
+  WS:     ws://localhost:8080/ws
+```
+
+**Step 2: Each member runs client.js**
+
+```bash
+TODO_MODE=server TODO_PATH=http://192.168.1.100:8080 TODO_USER=Alice PORT=3000 node client.js
+```
+
+Set `TODO_PATH` to the server's HTTP address. Each member can use a different local `PORT` but all point to the same server.
+
+---
+
+### Startup Output Example
+
+```
+✓ Client: http://localhost:3000
+  User:   Alice
+  Mode:   伺服器模式 → http://192.168.1.100:8080
+```
+
+Open the URL in a browser to use the app.
+
+---
+
+### Environment Variables
+
+| Variable | Default (client) | Default (server) | Description |
+|----------|-----------------|-----------------|-------------|
+| `PORT` | `3000` | `8080` | Listen port |
+| `TODO_MODE` | `local-sqlite` | `sqlite` | Operating mode |
+| `TODO_PATH` | `./todo.db` | `./shared.db` | File path or server URL |
+| `TODO_USER` | `Justin` | — | Username (client only) |
+
+---
 
 ### Usage
 
 #### Left sidebar (member list)
-- Lists all members who have data in the shared DB
+- Lists all members who have data
 - Click a member's name to view their task list
-- Your own name is marked with "(我)" / "(me)"
+- Your own name is marked with "(我)"
 - Click "⬇ 匯出 Excel" at the bottom to download an Excel file with all members' data
 
 #### Task fields

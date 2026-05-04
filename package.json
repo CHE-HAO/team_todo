@@ -2,9 +2,10 @@
   "name": "team-todo",
   "version": "1.0.0",
   "description": "Team todo & progress tracker with shared SQLite DB",
-  "main": "server.js",
+  "main": "client.js",
   "scripts": {
-    "start": "node server.js"
+    "start": "node client.js",
+    "server": "node server.js"
   },
   "dependencies": {
     "better-sqlite3": "^12.9.0",
