@@ -1,7 +1,8 @@
 'use strict';
 
-// ─── CONFIG (每人修改這三行) ────────────────────────────────────────────────────
-const DB_PATH  = process.env.DB_PATH   || './todo.db'; // SQLite 檔案路徑（區域網路共享路徑）
+// ─── CONFIG (每人修改這幾行) ────────────────────────────────────────────────────
+const STORAGE_TYPE = process.env.STORAGE_TYPE || 'sqlite'; // 'sqlite' or 'json'
+const DB_PATH  = process.env.DB_PATH   || './todo.db'; // SQLite 或 JSON 檔案路徑（區域網路共享路徑）
 const PORT     = parseInt(process.env.PORT)   || 3000; // server 監聽 port
 const USERNAME = process.env.TODO_USER || 'Justin';     // 當前使用者名稱（env: TODO_USER）
 // ──────────────────────────────────────────────────────────────────────────────
@@ -12,55 +13,178 @@ const { WebSocketServer } = require('ws');
 const Database       = require('better-sqlite3');
 const { v4: uuidv4 } = require('uuid');
 const ExcelJS       = require('exceljs');
+const fs            = require('fs');
 
-// ─── DATABASE ─────────────────────────────────────────────────────────────────
+// ─── STORAGE ──────────────────────────────────────────────────────────────────
 
-const db = new Database(DB_PATH);
-db.exec('PRAGMA busy_timeout = 10000'); // 先設 timeout，後續 PRAGMA/寫入才能自動重試
-db.exec('PRAGMA journal_mode = WAL');
-db.exec('PRAGMA foreign_keys = ON');
+function makeSQLiteStorage() {
+  const db = new Database(DB_PATH);
+  db.exec('PRAGMA busy_timeout = 10000');
+  db.exec('PRAGMA journal_mode = WAL');
+  db.exec('PRAGMA foreign_keys = ON');
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS items (
+      id          TEXT PRIMARY KEY,
+      owner       TEXT NOT NULL,
+      parent_id   TEXT,
+      sort_order  INTEGER NOT NULL DEFAULT 0,
+      task        TEXT NOT NULL DEFAULT '',
+      status      TEXT NOT NULL DEFAULT '',
+      result_plan TEXT NOT NULL DEFAULT '',
+      risk_help   TEXT NOT NULL DEFAULT '',
+      due_date    TEXT NOT NULL DEFAULT '',
+      priority    TEXT NOT NULL DEFAULT '中',
+      progress    INTEGER NOT NULL DEFAULT 0,
+      note        TEXT NOT NULL DEFAULT '',
+      updated_at  INTEGER NOT NULL,
+      created_at  INTEGER NOT NULL
+    )
+  `);
+  try { db.exec("ALTER TABLE items ADD COLUMN due_date TEXT NOT NULL DEFAULT ''"); } catch {}
 
-db.exec(`
-  CREATE TABLE IF NOT EXISTS items (
-    id          TEXT PRIMARY KEY,
-    owner       TEXT NOT NULL,
-    parent_id   TEXT,
-    sort_order  INTEGER NOT NULL DEFAULT 0,
-    task        TEXT NOT NULL DEFAULT '',
-    status      TEXT NOT NULL DEFAULT '',
-    result_plan TEXT NOT NULL DEFAULT '',
-    risk_help   TEXT NOT NULL DEFAULT '',
-    due_date    TEXT NOT NULL DEFAULT '',
-    priority    TEXT NOT NULL DEFAULT '中',
-    progress    INTEGER NOT NULL DEFAULT 0,
-    note        TEXT NOT NULL DEFAULT '',
-    updated_at  INTEGER NOT NULL,
-    created_at  INTEGER NOT NULL
-  )
-`);
+  const stmtAll = db.prepare('SELECT * FROM items ORDER BY sort_order ASC');
 
-try { db.exec("ALTER TABLE items ADD COLUMN due_date TEXT NOT NULL DEFAULT ''"); } catch {}
-
-
-// ─── EXCLUSIVE TRANSACTION WITH RETRY ─────────────────────────────────────────
-
-function withExclusive(fn) {
-  // busy_timeout 讓 SQLite 內部自動做指數退避重試（最多 10 秒）
-  db.exec('BEGIN EXCLUSIVE');
-  try {
-    const result = fn();
-    db.exec('COMMIT');
-    return result;
-  } catch (err) {
-    try { db.exec('ROLLBACK'); } catch {}
-    throw err;
+  function excl(fn) {
+    db.exec('BEGIN EXCLUSIVE');
+    try { const r = fn(); db.exec('COMMIT'); return r; }
+    catch (err) { try { db.exec('ROLLBACK'); } catch {} throw err; }
   }
+
+  return {
+    getAllItems() { return stmtAll.all(); },
+
+    getOwnerOf(id) {
+      return db.prepare('SELECT owner FROM items WHERE id = ?').get(id)?.owner ?? null;
+    },
+
+    createItem(owner, parent_id, task) {
+      excl(() => {
+        const { m } = db.prepare(
+          'SELECT COALESCE(MAX(sort_order), -1) AS m FROM items WHERE parent_id IS ?'
+        ).get(parent_id ?? null);
+        const now = Date.now();
+        db.prepare(`
+          INSERT INTO items (id, owner, parent_id, sort_order, task, status, result_plan, risk_help,
+                             priority, progress, note, updated_at, created_at)
+          VALUES (?, ?, ?, ?, ?, '', '', '', '中', 0, '', ?, ?)
+        `).run(uuidv4(), owner, parent_id ?? null, m + 1, task ?? '', now, now);
+      });
+    },
+
+    updateItem(id, updates, clientUpdatedAt) {
+      let result = { conflict: false };
+      excl(() => {
+        const cur = db.prepare('SELECT updated_at FROM items WHERE id = ?').get(id);
+        if (!cur) return;
+        if (clientUpdatedAt < cur.updated_at) {
+          const latest = db.prepare('SELECT * FROM items WHERE id = ?').get(id);
+          result = { conflict: true, latest };
+          return;
+        }
+        const setClauses = Object.keys(updates).map(k => `${k} = ?`).join(', ');
+        db.prepare(`UPDATE items SET ${setClauses}, updated_at = ? WHERE id = ?`)
+          .run(...Object.values(updates), Date.now(), id);
+      });
+      return result;
+    },
+
+    deleteCascade(id) {
+      excl(() => {
+        const deleteTree = (itemId) => {
+          const children = db.prepare('SELECT id FROM items WHERE parent_id = ?').all(itemId);
+          for (const c of children) deleteTree(c.id);
+          db.prepare('DELETE FROM items WHERE id = ?').run(itemId);
+        };
+        deleteTree(id);
+      });
+    },
+
+    reorderItems(items, username) {
+      excl(() => {
+        const getOwner = db.prepare('SELECT owner FROM items WHERE id = ?');
+        const updateOrder = db.prepare('UPDATE items SET sort_order = ?, updated_at = ? WHERE id = ?');
+        const now = Date.now();
+        for (const { id, sort_order } of items) {
+          const row = getOwner.get(id);
+          if (!row || row.owner !== username) throw Object.assign(new Error('越權操作'), { code: 'EPERM' });
+          updateOrder.run(sort_order, now, id);
+        }
+      });
+    },
+  };
 }
 
-const stmtAllItems = db.prepare('SELECT * FROM items ORDER BY sort_order ASC');
-function getAllItems() {
-  return stmtAllItems.all();
+function makeJsonStorage() {
+  function readItems() {
+    try { return JSON.parse(fs.readFileSync(DB_PATH, 'utf8')); } catch { return []; }
+  }
+  function writeItems(items) {
+    fs.writeFileSync(DB_PATH, JSON.stringify(items, null, 2));
+  }
+
+  return {
+    getAllItems() {
+      return readItems().sort((a, b) => a.sort_order - b.sort_order);
+    },
+
+    getOwnerOf(id) {
+      return readItems().find(i => i.id === id)?.owner ?? null;
+    },
+
+    createItem(owner, parent_id, task) {
+      const items = readItems();
+      const siblings = items.filter(i => (i.parent_id ?? null) === (parent_id ?? null));
+      const maxOrder = siblings.length ? Math.max(...siblings.map(i => i.sort_order)) : -1;
+      const now = Date.now();
+      items.push({
+        id: uuidv4(), owner, parent_id: parent_id ?? null,
+        sort_order: maxOrder + 1, task: task ?? '',
+        status: '', result_plan: '', risk_help: '', due_date: '',
+        priority: '中', progress: 0, note: '',
+        updated_at: now, created_at: now,
+      });
+      writeItems(items);
+    },
+
+    updateItem(id, updates, clientUpdatedAt) {
+      const items = readItems();
+      const idx = items.findIndex(i => i.id === id);
+      if (idx === -1) return { conflict: false };
+      const cur = items[idx];
+      if (clientUpdatedAt < cur.updated_at) return { conflict: true, latest: cur };
+      Object.assign(items[idx], updates, { updated_at: Date.now() });
+      writeItems(items);
+      return { conflict: false };
+    },
+
+    deleteCascade(id) {
+      const items = readItems();
+      const toDelete = new Set();
+      const collect = (itemId) => {
+        toDelete.add(itemId);
+        items.filter(i => i.parent_id === itemId).forEach(c => collect(c.id));
+      };
+      collect(id);
+      writeItems(items.filter(i => !toDelete.has(i.id)));
+    },
+
+    reorderItems(items, username) {
+      const data = readItems();
+      const now = Date.now();
+      for (const { id, sort_order } of items) {
+        const item = data.find(i => i.id === id);
+        if (!item || item.owner !== username) throw Object.assign(new Error('越權操作'), { code: 'EPERM' });
+        item.sort_order = sort_order;
+        item.updated_at = now;
+      }
+      writeItems(data);
+    },
+  };
 }
+
+const storage = STORAGE_TYPE === 'json' ? makeJsonStorage() : makeSQLiteStorage();
+
+function getAllItems() { return storage.getAllItems(); }
 
 // ─── HTTP + WS SERVER ─────────────────────────────────────────────────────────
 
@@ -108,19 +232,7 @@ function handleMessage(ws, msg) {
     case 'create_item': {
       const { owner, parent_id, task } = msg;
       if (owner !== USERNAME) return ws.send(JSON.stringify({ type: 'error', message: '越權操作' }));
-
-      withExclusive(() => {
-        const { m } = db.prepare(
-          'SELECT COALESCE(MAX(sort_order), -1) AS m FROM items WHERE parent_id IS ?'
-        ).get(parent_id ?? null);
-        const now = Date.now();
-        db.prepare(`
-          INSERT INTO items (id, owner, parent_id, sort_order, task, status, result_plan, risk_help,
-                             priority, progress, note, updated_at, created_at)
-          VALUES (?, ?, ?, ?, ?, '', '', '', '中', 0, '', ?, ?)
-        `).run(uuidv4(), owner, parent_id ?? null, m + 1, task ?? '', now, now);
-      });
-
+      storage.createItem(owner, parent_id, task);
       syncAll();
       break;
     }
@@ -129,9 +241,9 @@ function handleMessage(ws, msg) {
       const { id, updated_at } = msg;
       if (!id || updated_at == null) return;
 
-      const existing = db.prepare('SELECT owner FROM items WHERE id = ?').get(id);
-      if (!existing) return;
-      if (existing.owner !== USERNAME) return ws.send(JSON.stringify({ type: 'error', message: '越權操作' }));
+      const owner = storage.getOwnerOf(id);
+      if (!owner) return;
+      if (owner !== USERNAME) return ws.send(JSON.stringify({ type: 'error', message: '越權操作' }));
 
       const updates = {};
       for (const key of ALLOWED_FIELDS) {
@@ -139,24 +251,12 @@ function handleMessage(ws, msg) {
       }
       if (Object.keys(updates).length === 0) return;
 
-      let conflict = false;
-      withExclusive(() => {
-        const cur = db.prepare('SELECT updated_at FROM items WHERE id = ?').get(id);
-        if (!cur) return;
-
-        if (updated_at < cur.updated_at) {
-          conflict = true;
-          const latest = db.prepare('SELECT * FROM items WHERE id = ?').get(id);
-          ws.send(JSON.stringify({ type: 'conflict', item: latest, message: '資料已由他人更新，請確認後重新操作' }));
-          return;
-        }
-
-        const setClauses = Object.keys(updates).map(k => `${k} = ?`).join(', ');
-        db.prepare(`UPDATE items SET ${setClauses}, updated_at = ? WHERE id = ?`)
-          .run(...Object.values(updates), Date.now(), id);
-      });
-
-      if (!conflict) syncAll();
+      const result = storage.updateItem(id, updates, updated_at);
+      if (result.conflict) {
+        ws.send(JSON.stringify({ type: 'conflict', item: result.latest, message: '資料已由他人更新，請確認後重新操作' }));
+      } else {
+        syncAll();
+      }
       break;
     }
 
@@ -164,19 +264,11 @@ function handleMessage(ws, msg) {
       const { id } = msg;
       if (!id) return;
 
-      const existing = db.prepare('SELECT owner FROM items WHERE id = ?').get(id);
-      if (!existing) return;
-      if (existing.owner !== USERNAME) return ws.send(JSON.stringify({ type: 'error', message: '越權操作' }));
+      const owner = storage.getOwnerOf(id);
+      if (!owner) return;
+      if (owner !== USERNAME) return ws.send(JSON.stringify({ type: 'error', message: '越權操作' }));
 
-      withExclusive(() => {
-        const deleteTree = (itemId) => {
-          const children = db.prepare('SELECT id FROM items WHERE parent_id = ?').all(itemId);
-          for (const c of children) deleteTree(c.id);
-          db.prepare('DELETE FROM items WHERE id = ?').run(itemId);
-        };
-        deleteTree(id);
-      });
-
+      storage.deleteCascade(id);
       syncAll();
       break;
     }
@@ -184,18 +276,7 @@ function handleMessage(ws, msg) {
     case 'reorder_items': {
       const { items } = msg;
       if (!Array.isArray(items) || items.length === 0) return;
-
-      withExclusive(() => {
-        const getOwner = db.prepare('SELECT owner FROM items WHERE id = ?');
-        const updateOrder = db.prepare('UPDATE items SET sort_order = ?, updated_at = ? WHERE id = ?');
-        const now = Date.now();
-        for (const { id, sort_order } of items) {
-          const row = getOwner.get(id);
-          if (!row || row.owner !== USERNAME) throw Object.assign(new Error('越權操作'), { code: 'EPERM' });
-          updateOrder.run(sort_order, now, id);
-        }
-      });
-
+      storage.reorderItems(items, USERNAME);
       syncAll();
       break;
     }
@@ -272,8 +353,8 @@ setInterval(syncAll, 10_000);
 
 server.listen(PORT, () => {
   console.log(`✓ Server: http://localhost:${PORT}`);
-  console.log(`  User: ${USERNAME}`);
-  console.log(`  DB:   ${DB_PATH}`);
+  console.log(`  User:    ${USERNAME}`);
+  console.log(`  Storage: ${STORAGE_TYPE.toUpperCase()} → ${DB_PATH}`);
 });
 
 // ─── HTML TEMPLATE ────────────────────────────────────────────────────────────
