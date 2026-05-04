@@ -1,9 +1,9 @@
 'use strict';
 
 // ─── CONFIG ───────────────────────────────────────────────────────────────────
-const PORT     = parseInt(process.env.PORT)     || 3000;
-const MODE     = process.env.TODO_MODE          || 'local-sqlite'; // 'server' | 'local-sqlite' | 'local-json'
-const PATH     = (process.env.TODO_PATH         || './todo.db').replace(/\/$/, '');
+const PORT     = parseInt(process.env.PORT)     || 45678;
+const MODE     = process.env.TODO_MODE          || 'local-json'; // 'server' | 'local-sqlite' | 'local-json'
+const PATH     = (process.env.TODO_PATH         || './todo.json').replace(/\/$/, '');
 const USERNAME = process.env.TODO_USER          || 'Justin';
 // ──────────────────────────────────────────────────────────────────────────────
 
@@ -555,8 +555,9 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;font-siz
 .item-row:hover{background:#fafafa}
 
 /* ── Columns ── */
-.c-ops{width:var(--col-ops);min-width:var(--col-ops);display:flex;align-items:center;gap:1px;padding:2px 3px;flex-shrink:0}
-.c-task{width:var(--col-task);min-width:var(--col-task);flex-shrink:0;display:flex;align-items:center}
+.c-first{width:calc(var(--col-ops) + var(--col-task));min-width:calc(var(--col-ops) + var(--col-task));display:flex;align-items:stretch;flex-shrink:0}
+.c-ops{display:flex;align-items:center;gap:1px;padding:2px 3px;flex-shrink:0}
+.c-task{flex:1;min-width:0;display:flex;align-items:center}
 .c-status{width:var(--col-status);min-width:var(--col-status);flex-shrink:0;display:flex;align-items:center}
 .c-result{width:var(--col-result);min-width:var(--col-result);flex-shrink:0;display:flex;align-items:center}
 .c-risk{width:var(--col-risk);min-width:var(--col-risk);flex-shrink:0;display:flex;align-items:center}
@@ -627,8 +628,7 @@ select{cursor:pointer}
     </div>
     <div class="table-wrap">
       <div class="tbl-header">
-        <div style="width:var(--col-ops)">操作</div>
-        <div style="width:var(--col-task)">工作項目</div>
+        <div style="width:calc(var(--col-ops) + var(--col-task));text-align:center">工作項目</div>
         <div style="width:var(--col-status)">目前進度</div>
         <div style="width:var(--col-result)">成果/下一步計畫</div>
         <div style="width:var(--col-risk)">風險/需要協助事項</div>
@@ -823,11 +823,15 @@ function buildRow(item, isOwn, depth) {
     ops.appendChild(delBtn);
   }
 
-  row.appendChild(ops);
+  // ── First column wrapper (ops + task) ──
+  const firstCol = document.createElement('div');
+  firstCol.className = 'c-first';
+  firstCol.appendChild(ops);
+  row.appendChild(firstCol);
 
   // ── Data columns ──
   const cols = [
-    { key: 'task',        cls: 'c-task',     type: 'text'   },
+    { key: 'task',        cls: 'c-task',     type: 'text',   container: firstCol },
     { key: 'status',      cls: 'c-status',   type: 'text'   },
     { key: 'result_plan', cls: 'c-result',   type: 'text'   },
     { key: 'risk_help',   cls: 'c-risk',     type: 'text'   },
@@ -875,7 +879,7 @@ function buildRow(item, isOwn, depth) {
       cell.appendChild(ro);
     }
 
-    row.appendChild(cell);
+    (col.container ?? row).appendChild(cell);
   }
 
   return row;
