@@ -864,6 +864,7 @@ function buildRow(item, isOwn, depth) {
         input = document.createElement('input');
         input.type = col.type;
         input.value = item[col.key] ?? '';
+        if (col.key === 'task') input.placeholder = item.parent_id ? '新子項目' : '新項目';
         if (col.type === 'number') { input.min = 0; input.max = 100; }
       }
 
@@ -892,8 +893,8 @@ function buildRow(item, isOwn, depth) {
 
 // ── Actions ────────────────────────────────────────────────────────────────
 
-function addRootItem()  { send({ type: 'create_item', owner: ME, parent_id: null,     task: '新項目'   }); }
-function addChild(pid)  { send({ type: 'create_item', owner: ME, parent_id: pid,      task: '新子項目' }); }
+function addRootItem()  { send({ type: 'create_item', owner: ME, parent_id: null, task: '' }); }
+function addChild(pid)  { send({ type: 'create_item', owner: ME, parent_id: pid,  task: '' }); }
 
 function deleteItem(id, task) {
   const hasKids = allItems.some(i => i.parent_id === id);
