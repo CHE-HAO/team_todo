@@ -90,22 +90,22 @@ function createItem({ owner, parent_id, task }) {
   if (MODE === 'sqlite') {
     withExclusive(() => {
       const { m } = db.prepare(
-        'SELECT COALESCE(MAX(sort_order), -1) AS m FROM items WHERE parent_id IS ?'
+        'SELECT COALESCE(MIN(sort_order), 1) AS m FROM items WHERE parent_id IS ?'
       ).get(parent_id ?? null);
       const now = Date.now();
       db.prepare(`
         INSERT INTO items (id, owner, parent_id, sort_order, task, status, result_plan,
                            risk_help, priority, progress, note, updated_at, created_at)
         VALUES (?, ?, ?, ?, ?, '', '', '', '中', 0, '', ?, ?)
-      `).run(uuidv4(), owner, parent_id ?? null, m + 1, task ?? '', now, now);
+      `).run(uuidv4(), owner, parent_id ?? null, m - 1, task ?? '', now, now);
     });
   } else {
     const siblings = jsonItems.filter(i => (i.parent_id ?? null) === (parent_id ?? null));
-    const maxOrder = siblings.reduce((m, i) => Math.max(m, i.sort_order), -1);
+    const minOrder = siblings.reduce((m, i) => Math.min(m, i.sort_order), 1);
     const now = Date.now();
     jsonItems.push({
       id: uuidv4(), owner, parent_id: parent_id ?? null,
-      sort_order: maxOrder + 1,
+      sort_order: minOrder - 1,
       task: task ?? '', status: '', result_plan: '', risk_help: '',
       due_date: '', priority: '中', progress: 0, note: '',
       updated_at: now, created_at: now,
