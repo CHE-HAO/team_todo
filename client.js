@@ -93,22 +93,22 @@ function localCreate({ owner, parent_id, task }) {
   if (MODE === 'local-sqlite') {
     withExclusive(() => {
       const { m } = db.prepare(
-        'SELECT COALESCE(MAX(sort_order), -1) AS m FROM items WHERE parent_id IS ?'
+        'SELECT COALESCE(MIN(sort_order), 1) AS m FROM items WHERE parent_id IS ?'
       ).get(parent_id ?? null);
       const now = Date.now();
       db.prepare(`
         INSERT INTO items (id, owner, parent_id, sort_order, task, status, result_plan,
                            risk_help, priority, progress, note, updated_at, created_at)
         VALUES (?, ?, ?, ?, ?, '', '', '', '中', 0, '', ?, ?)
-      `).run(uuidv4(), owner, parent_id ?? null, m + 1, task ?? '', now, now);
+      `).run(uuidv4(), owner, parent_id ?? null, m - 1, task ?? '', now, now);
     });
   } else {
     const siblings = jsonItems.filter(i => (i.parent_id ?? null) === (parent_id ?? null));
-    const maxOrder = siblings.reduce((m, i) => Math.max(m, i.sort_order), -1);
+    const minOrder = siblings.reduce((m, i) => Math.min(m, i.sort_order), 1);
     const now = Date.now();
     jsonItems.push({
       id: uuidv4(), owner, parent_id: parent_id ?? null,
-      sort_order: maxOrder + 1,
+      sort_order: minOrder - 1,
       task: task ?? '', status: '', result_plan: '', risk_help: '',
       due_date: '', priority: '中', progress: 0, note: '',
       updated_at: now, created_at: now,
@@ -549,7 +549,9 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;font-siz
   font-size:11px;font-weight:700;color:#555;
   padding:6px 0;
 }
-.tbl-header>div{padding:0 6px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;flex-shrink:0}
+.tbl-header>div{padding:0 6px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;flex-shrink:0;position:relative}
+.col-resizer{position:absolute;right:0;top:0;bottom:0;width:5px;cursor:col-resize;z-index:1;user-select:none}
+.col-resizer:hover,.col-resizer.resizing{background:rgba(137,180,250,.55)}
 
 .item-row{
   display:flex;align-items:stretch;
@@ -633,14 +635,14 @@ select{cursor:pointer}
     </div>
     <div class="table-wrap">
       <div class="tbl-header">
-        <div style="width:calc(var(--col-ops) + var(--col-task));text-align:center">工作項目</div>
-        <div style="width:var(--col-status)">目前進度</div>
-        <div style="width:var(--col-result)">成果/下一步計畫</div>
-        <div style="width:var(--col-risk)">風險/需要協助事項</div>
-        <div style="width:var(--col-due)">預定完成日期</div>
-        <div style="width:var(--col-priority)">優先順序</div>
-        <div style="width:var(--col-progress)">進度%</div>
-        <div style="width:var(--col-note)">備註</div>
+        <div style="width:calc(var(--col-ops) + var(--col-task));text-align:center">工作項目<div class="col-resizer" data-col="task"></div></div>
+        <div style="width:var(--col-status)">目前進度<div class="col-resizer" data-col="status"></div></div>
+        <div style="width:var(--col-result)">成果/下一步計畫<div class="col-resizer" data-col="result"></div></div>
+        <div style="width:var(--col-risk)">風險/需要協助事項<div class="col-resizer" data-col="risk"></div></div>
+        <div style="width:var(--col-due)">預定完成日期<div class="col-resizer" data-col="due"></div></div>
+        <div style="width:var(--col-priority)">優先順序<div class="col-resizer" data-col="priority"></div></div>
+        <div style="width:var(--col-progress)">進度%<div class="col-resizer" data-col="progress"></div></div>
+        <div style="width:var(--col-note)">備註<div class="col-resizer" data-col="note"></div></div>
       </div>
       <div id="items-root"></div>
     </div>
@@ -910,7 +912,63 @@ function esc(s) {
   return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 }
 
+// ── Column resize ──────────────────────────────────────────────────────────
+
+const RESIZABLE_COLS = ['task','status','result','risk','due','priority','progress','note'];
+
+function getCookie(name) {
+  const m = document.cookie.match(new RegExp('(?:^|; )' + name.replace(/[.*+?^${}()|[\]\\]/g,'\\$&') + '=([^;]*)'));
+  return m ? decodeURIComponent(m[1]) : null;
+}
+
+function saveColWidths() {
+  const widths = {};
+  for (const col of RESIZABLE_COLS) {
+    const v = getComputedStyle(document.documentElement).getPropertyValue('--col-' + col).trim();
+    if (v) widths[col] = parseInt(v);
+  }
+  document.cookie = 'col_widths=' + encodeURIComponent(JSON.stringify(widths)) + ';path=/;max-age=' + (365*24*3600);
+}
+
+function initResizers() {
+  const saved = getCookie('col_widths');
+  if (saved) {
+    try {
+      const widths = JSON.parse(saved);
+      for (const [k, v] of Object.entries(widths)) {
+        if (RESIZABLE_COLS.includes(k) && Number.isFinite(v) && v >= 40) {
+          document.documentElement.style.setProperty('--col-' + k, v + 'px');
+        }
+      }
+    } catch {}
+  }
+
+  for (const el of document.querySelectorAll('.col-resizer')) {
+    el.addEventListener('mousedown', (e) => {
+      e.preventDefault();
+      const col = el.dataset.col;
+      const startX = e.clientX;
+      const startW = parseInt(getComputedStyle(document.documentElement).getPropertyValue('--col-' + col)) || 80;
+      el.classList.add('resizing');
+
+      function onMove(e) {
+        const w = Math.max(40, startW + e.clientX - startX);
+        document.documentElement.style.setProperty('--col-' + col, w + 'px');
+      }
+      function onUp() {
+        el.classList.remove('resizing');
+        saveColWidths();
+        document.removeEventListener('mousemove', onMove);
+        document.removeEventListener('mouseup', onUp);
+      }
+      document.addEventListener('mousemove', onMove);
+      document.addEventListener('mouseup', onUp);
+    });
+  }
+}
+
 connect();
+initResizers();
 </script>
 </body>
 </html>`;
