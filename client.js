@@ -13,6 +13,7 @@ const { WebSocketServer, WebSocket } = require('ws');
 const { v4: uuidv4 }       = require('uuid');
 const ExcelJS              = require('exceljs');
 const fs                   = require('fs');
+const path                 = require('path');
 
 const ALLOWED_FIELDS = ['task', 'status', 'result_plan', 'risk_help', 'due_date', 'priority', 'progress', 'note'];
 
@@ -395,6 +396,10 @@ function connectToServer() {
 
 // ─── HTTP ROUTES ──────────────────────────────────────────────────────────────
 
+app.get('/sortable.min.js', (_req, res) => {
+  res.sendFile(path.join(__dirname, 'node_modules/sortablejs/Sortable.min.js'));
+});
+
 app.get('/export', async (_req, res) => {
   const items   = allItems;
   const byOwner = {};
@@ -494,7 +499,7 @@ function getHTML() {
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Team Todo – ${USERNAME}</title>
-<script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.2/Sortable.min.js"></script>
+<script src="/sortable.min.js"></script>
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
 body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;font-size:13px;background:#f0f0f0;height:100vh;overflow:hidden}
