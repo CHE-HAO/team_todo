@@ -8,35 +8,47 @@
 
 ### 簡介
 
-team_todo 是一套輕量級的團隊工作追蹤工具，支援三種執行模式：
-
-| 模式 | 說明 |
-|------|------|
-| **本地 SQLite** | 單人或共享 SQLite 檔案（舊有模式，向下相容） |
-| **本地 JSON** | 單人使用，以 JSON 檔案儲存 |
-| **伺服器模式** | 多人共用，所有人連線至同一台 `server.js` |
+team_todo 是一套輕量級的團隊工作追蹤工具。啟動單一伺服器後，所有成員直接用瀏覽器連線，無須各自安裝或執行任何程式。
 
 ### 系統需求
 
 | 項目 | 需求 |
 |------|------|
-| Node.js | 20.x 以上（需支援全域 `fetch`） |
+| Node.js | 20.x 以上 |
 | 作業系統 | macOS / Linux / Windows |
 
 ### 架構概述
 
 ```
-伺服器模式：
-  [瀏覽器] ─WS─► [client.js 本地 :3000] ─REST API─► [server.js 共享 :8080]
-                                          ◄─WS sync_all──────────────────────
-
-本地模式：
-  [瀏覽器] ─WS─► [client.js 本地 :3000] ─► SQLite / JSON 本地檔案
+[瀏覽器 A] ─WS─┐
+[瀏覽器 B] ─WS─┤─► [index.js :3000] ─► data/ (JSON 檔案)
+[瀏覽器 C] ─WS─┘
 ```
 
-- **衝突偵測**：每次更新攜帶 `updated_at` 時間戳，若伺服器端資料較新則拒絕並通知 client 刷新
-- **即時同步**：同機器靠 WebSocket broadcast；跨機器（本地模式）靠每 10 秒重讀儲存檔；伺服器模式靠 server.js 主動推送
-- **WAL + 排他鎖**（SQLite）：`BEGIN EXCLUSIVE` 避免多寫入者資料損毀
+所有資料儲存於 `data/` 目錄下的 JSON 檔案。使用者名稱在瀏覽器介面中設定，不需修改設定檔。
+
+| 檔案 | 說明 |
+|------|------|
+| `data/items.json` | 所有工作項目 |
+| `data/users.json` | 已登錄的成員 |
+| `data/settings.json` | 各成員的個人設定 |
+
+**key 元件**（均在 `index.js` 及各子模組）：
+
+| 模組 | 說明 |
+|------|------|
+| `config.js` | PORT、DATA_PATH 設定 |
+| `storage/items.js` | 工作項目 CRUD、衝突偵測、完成項目排序 |
+| `storage/users.js` | 成員註冊與重新命名 |
+| `storage/settings.js` | 個人設定（如隱藏已完成項目） |
+| `storage/queue.js` | 寫入序列化，避免並發衝突 |
+| `ws/handler.js` | WebSocket 訊息路由 |
+| `routes/export.js` | GET /export → Excel 下載 |
+| `public/index.html` | 前端 SPA |
+
+**即時同步**：每次寫入後透過 WebSocket broadcast 推送給所有連線瀏覽器。
+
+**衝突偵測**：每次 `update_item` 攜帶 `updated_at` 時間戳；若伺服器端資料較新，伺服器回傳 `conflict` 並附上最新資料，客戶端確認後重新編輯。
 
 ---
 
@@ -50,112 +62,52 @@ cd team_todo
 
 ---
 
-### 各模式啟動方式
-
-#### 1. 本地 SQLite 模式（預設）
-
-與舊版行為完全相同，適合單人使用或透過網路共享磁碟多人協作。
+### 啟動
 
 ```bash
-node client.js
+node index.js
 # 或
 npm start
 ```
 
-**設定（選擇其一）：**
-
-直接修改 `client.js` 頂端：
-```js
-const PORT     = 3000;
-const MODE     = 'local-sqlite';
-const PATH     = './todo.db';      // 可改為網路磁碟路徑
-const USERNAME = 'Justin';
-```
-
-或使用環境變數：
-```bash
-PORT=3001 TODO_PATH=/Volumes/share/team.db TODO_USER=Alice node client.js
-```
-
----
-
-#### 2. 本地 JSON 模式
-
-以 JSON 檔案取代 SQLite，其餘行為相同。
-
-```bash
-TODO_MODE=local-json TODO_PATH=./todo.json TODO_USER=Alice node client.js
-```
-
----
-
-#### 3. 伺服器模式（多人共用）
-
-**步驟 1：啟動共享伺服器（只需一台機器執行）**
-
-```bash
-node server.js
-# 或
-npm run server
-```
-
-設定（修改 `server.js` 頂端或使用環境變數）：
-```js
-const PORT = 8080;
-const MODE = 'sqlite';      // 'sqlite' 或 'json'
-const PATH = './shared.db'; // 資料儲存路徑
-```
-
-```bash
-PORT=8080 TODO_MODE=sqlite TODO_PATH=./shared.db node server.js
-```
-
 啟動後顯示：
+
 ```
-✓ Server: http://localhost:8080
-  Mode:   SQLite → ./shared.db
-  WS:     ws://localhost:8080/ws
+✓ Server: http://0.0.0.0:3000
+  Data:   /path/to/team_todo/data
 ```
 
-**步驟 2：每位成員各自啟動 client.js**
+用瀏覽器開啟 `http://<伺服器IP>:3000` 即可使用。首次開啟時，介面會要求輸入使用者名稱。
+
+---
+
+### 設定
+
+修改 `config.js` 頂端，或使用環境變數：
+
+```js
+const PORT      = parseInt(process.env.PORT)      || 3000;
+const DATA_PATH = path.resolve((process.env.DATA_PATH || './data'));
+```
+
+| 環境變數 | 預設值 | 說明 |
+|----------|--------|------|
+| `PORT` | `3000` | 監聽 port |
+| `DATA_PATH` | `./data` | JSON 資料儲存目錄 |
 
 ```bash
-TODO_MODE=server TODO_PATH=http://192.168.1.100:8080 TODO_USER=Alice PORT=3000 node client.js
+PORT=8080 DATA_PATH=/mnt/share/team_data node index.js
 ```
-
-`TODO_PATH` 填入 server.js 的 HTTP 位址。每位成員可用不同的本機 PORT，但指向同一個 server。
-
----
-
-### 啟動訊息範例
-
-```
-✓ Client: http://localhost:3000
-  User:   Alice
-  Mode:   伺服器模式 → http://192.168.1.100:8080
-```
-
-用瀏覽器開啟顯示的網址即可使用。
-
----
-
-### 環境變數對照表
-
-| 變數 | 預設值 | 說明 |
-|------|--------|------|
-| `PORT` | `3000`（client） / `8080`（server） | 監聽 port |
-| `TODO_MODE` | `local-sqlite`（client） / `sqlite`（server） | 執行模式 |
-| `TODO_PATH` | `./todo.db`（client） / `./shared.db`（server） | 資料路徑或 server URL |
-| `TODO_USER` | `Justin` | 使用者名稱（僅 client 使用） |
 
 ---
 
 ### 操作說明
 
 #### 左側欄（成員列表）
-- 顯示所有有資料的成員名稱
+- 顯示所有已登錄的成員名稱
 - 點選成員名稱可切換查看該成員的工作清單
 - 自己的名稱旁會標示「(我)」
+- 可在設定中重新命名自己
 - 底部「⬇ 匯出 Excel」可下載所有成員的資料
 
 #### 工作項目欄位
@@ -166,22 +118,30 @@ TODO_MODE=server TODO_PATH=http://192.168.1.100:8080 TODO_USER=Alice PORT=3000 n
 | 目前進度 | 目前執行狀態的文字描述 |
 | 成果/下一步計畫 | 已完成事項或後續行動 |
 | 風險/需要協助事項 | 阻礙或需要他人支援的事項 |
+| 預定完成日期 | 預計完成日期 |
 | 優先順序 | 高 / 中 / 低 |
 | 進度% | 0–100 的數字 |
 | 備註 | 其他補充說明 |
+| 已完成 | 勾選後項目自動移至清單底部 |
 
 #### 新增與編輯（僅限自己的清單）
 - 點「＋ 新增項目」新增根層級項目
 - 點每列左側的「＋」新增子項目（支援多層巢狀）
 - 直接點擊欄位內容即可編輯，游標離開後自動存檔
 - 拖曳左側「⠿」圖示可調整同層順序
+- 勾選「已完成」後，項目自動排至該層最底部
 - 點「×」刪除項目（含所有子項目，刪除前會跳出確認視窗）
+- 可將項目移轉給其他成員
+
+#### 個人設定
+- 可隱藏已完成的項目
+- 可修改自己的使用者名稱（歷史資料一併更新）
 
 #### 衝突處理
 若同一筆資料被其他人更新，系統會跳出橘色提示，並自動刷新為最新版本，確認後再重新編輯即可。
 
 #### 匯出 Excel
-點選左側欄底部「⬇ 匯出 Excel」，下載 `team_todo.xlsx`。每位成員各佔一個工作表，依樹狀結構排列，子項目以 `└─` 縮排呈現。
+點選左側欄底部「⬇ 匯出 Excel」，下載 `team_todo.xlsx`。每位成員各佔一個工作表，依樹狀結構排列，子項目以縮排呈現。
 
 ---
 
@@ -189,35 +149,47 @@ TODO_MODE=server TODO_PATH=http://192.168.1.100:8080 TODO_USER=Alice PORT=3000 n
 
 ### Overview
 
-team_todo is a lightweight team task tracker that supports three operating modes:
-
-| Mode | Description |
-|------|-------------|
-| **local-sqlite** | Single-user or shared SQLite file (backward compatible with old setup) |
-| **local-json** | Single-user, JSON file storage |
-| **server** | Multi-user, everyone connects to a shared `server.js` |
+team_todo is a lightweight team task tracker. Start a single server and all team members connect directly via browser — no per-user installation or local server required.
 
 ### Requirements
 
 | Item | Requirement |
 |------|-------------|
-| Node.js | 20.x or above (needs global `fetch`) |
+| Node.js | 20.x or above |
 | OS | macOS / Linux / Windows |
 
 ### Architecture
 
 ```
-Server mode:
-  [Browser] ─WS─► [client.js local :3000] ─REST API─► [server.js shared :8080]
-                                            ◄─WS sync_all──────────────────────
-
-Local mode:
-  [Browser] ─WS─► [client.js local :3000] ─► SQLite / JSON local file
+[Browser A] ─WS─┐
+[Browser B] ─WS─┤─► [index.js :3000] ─► data/ (JSON files)
+[Browser C] ─WS─┘
 ```
 
-- **Conflict detection**: Each update carries an `updated_at` timestamp; if the server's record is newer, the write is rejected and the client is notified to refresh
-- **Real-time sync**: Same-machine via WebSocket broadcast; cross-machine (local mode) via 10-second DB re-read; server mode via server.js push
-- **WAL + exclusive lock** (SQLite): `BEGIN EXCLUSIVE` prevents corruption under concurrent writes
+All data is stored as JSON files in the `data/` directory. Usernames are set from the browser UI — no config file edits required.
+
+| File | Description |
+|------|-------------|
+| `data/items.json` | All task items |
+| `data/users.json` | Registered members |
+| `data/settings.json` | Per-user settings |
+
+**Key components:**
+
+| Module | Description |
+|--------|-------------|
+| `config.js` | PORT and DATA_PATH settings |
+| `storage/items.js` | Item CRUD, conflict detection, completed-item sorting |
+| `storage/users.js` | Member registration and rename |
+| `storage/settings.js` | Per-user settings (e.g. hide completed items) |
+| `storage/queue.js` | Write serialization to prevent concurrent conflicts |
+| `ws/handler.js` | WebSocket message routing |
+| `routes/export.js` | GET /export → Excel download |
+| `public/index.html` | Frontend SPA |
+
+**Real-time sync**: After every write, changes are broadcast via WebSocket to all connected browsers.
+
+**Conflict detection**: Each `update_item` carries an `updated_at` timestamp. If the server's record is newer, the server returns a `conflict` response with the latest data so the client can review and retry.
 
 ---
 
@@ -231,113 +203,53 @@ cd team_todo
 
 ---
 
-### Startup by Mode
-
-#### 1. Local SQLite Mode (default)
-
-Identical to the old behavior. Works for solo use or shared network drive collaboration.
+### Starting the server
 
 ```bash
-node client.js
+node index.js
 # or
 npm start
 ```
 
-**Configuration (choose one):**
-
-Edit the top of `client.js`:
-```js
-const PORT     = 3000;
-const MODE     = 'local-sqlite';
-const PATH     = './todo.db';      // or a network drive path
-const USERNAME = 'Justin';
-```
-
-Or use environment variables:
-```bash
-PORT=3001 TODO_PATH=/Volumes/share/team.db TODO_USER=Alice node client.js
-```
-
----
-
-#### 2. Local JSON Mode
-
-Uses a JSON file instead of SQLite; otherwise identical.
-
-```bash
-TODO_MODE=local-json TODO_PATH=./todo.json TODO_USER=Alice node client.js
-```
-
----
-
-#### 3. Server Mode (multi-user)
-
-**Step 1: Start the shared server (one machine only)**
-
-```bash
-node server.js
-# or
-npm run server
-```
-
-Configure by editing the top of `server.js` or using environment variables:
-```js
-const PORT = 8080;
-const MODE = 'sqlite';      // 'sqlite' or 'json'
-const PATH = './shared.db';
-```
-
-```bash
-PORT=8080 TODO_MODE=sqlite TODO_PATH=./shared.db node server.js
-```
-
 On startup:
+
 ```
-✓ Server: http://localhost:8080
-  Mode:   SQLite → ./shared.db
-  WS:     ws://localhost:8080/ws
+✓ Server: http://0.0.0.0:3000
+  Data:   /path/to/team_todo/data
 ```
 
-**Step 2: Each member runs client.js**
+Open `http://<server-IP>:3000` in a browser. On first visit, you will be prompted to enter your username.
+
+---
+
+### Configuration
+
+Edit `config.js` or use environment variables:
+
+```js
+const PORT      = parseInt(process.env.PORT)      || 3000;
+const DATA_PATH = path.resolve((process.env.DATA_PATH || './data'));
+```
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `PORT` | `3000` | Listen port |
+| `DATA_PATH` | `./data` | Directory for JSON data files |
 
 ```bash
-TODO_MODE=server TODO_PATH=http://192.168.1.100:8080 TODO_USER=Alice PORT=3000 node client.js
+PORT=8080 DATA_PATH=/mnt/share/team_data node index.js
 ```
-
-Set `TODO_PATH` to the server's HTTP address. Each member can use a different local `PORT` but all point to the same server.
-
----
-
-### Startup Output Example
-
-```
-✓ Client: http://localhost:3000
-  User:   Alice
-  Mode:   伺服器模式 → http://192.168.1.100:8080
-```
-
-Open the URL in a browser to use the app.
-
----
-
-### Environment Variables
-
-| Variable | Default (client) | Default (server) | Description |
-|----------|-----------------|-----------------|-------------|
-| `PORT` | `3000` | `8080` | Listen port |
-| `TODO_MODE` | `local-sqlite` | `sqlite` | Operating mode |
-| `TODO_PATH` | `./todo.db` | `./shared.db` | File path or server URL |
-| `TODO_USER` | `Justin` | — | Username (client only) |
 
 ---
 
 ### Usage
 
 #### Left sidebar (member list)
-- Lists all members who have data
+- Lists all registered members
 - Click a member's name to view their task list
 - Your own name is marked with "(我)"
-- Click "⬇ 匯出 Excel" at the bottom to download an Excel file with all members' data
+- You can rename yourself from the settings panel
+- Click "⬇ 匯出 Excel" at the bottom to export all members' data
 
 #### Task fields
 
@@ -347,19 +259,27 @@ Open the URL in a browser to use the app.
 | 目前進度 (Status) | Current status description |
 | 成果/下一步計畫 (Result/Plan) | Completed work or next actions |
 | 風險/需要協助事項 (Risk/Help) | Blockers or items needing support |
+| 預定完成日期 (Due date) | Target completion date |
 | 優先順序 (Priority) | 高 (High) / 中 (Medium) / 低 (Low) |
 | 進度% (Progress) | Number from 0 to 100 |
 | 備註 (Note) | Additional notes |
+| 已完成 (Completed) | Checking this moves the item to the bottom of its group |
 
 #### Adding & editing (your own list only)
 - Click "＋ 新增項目" to add a root-level item
 - Click "＋" on any row to add a child item (unlimited nesting depth)
 - Click any field to edit it; changes are saved automatically on blur
 - Drag the "⠿" handle to reorder items within the same level
+- Marking an item as completed automatically sorts it to the bottom of its group
 - Click "×" to delete an item and all its children (confirmation required)
+- Items can be transferred to another team member
+
+#### Personal settings
+- Toggle visibility of completed items
+- Rename yourself (all existing data is updated automatically)
 
 #### Conflict handling
 If a record was updated by another user, an orange toast message appears and the item is automatically refreshed to the latest version. Simply review the updated values and re-enter your changes.
 
 #### Excel export
-Click "⬇ 匯出 Excel" in the sidebar footer to download `team_todo.xlsx`. Each member gets their own worksheet. Items are listed in depth-first tree order with `└─` indentation for child items.
+Click "⬇ 匯出 Excel" in the sidebar footer to download `team_todo.xlsx`. Each member gets their own worksheet with items listed in depth-first tree order, with child items indented.
