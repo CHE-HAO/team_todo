@@ -31,12 +31,12 @@ function create({ owner, parent_id, task }) {
   return enqueue('items', () => {
     const items = read();
     const siblings = items.filter(i => (i.parent_id ?? null) === (parent_id ?? null));
-    const maxOrder = siblings.reduce((m, i) => Math.max(m, i.sort_order), -1);
+    const minOrder = siblings.reduce((m, i) => Math.min(m, i.sort_order), 1);
     const now = Date.now();
     const item = {
       id: uuidv4(), owner,
       parent_id: parent_id ?? null,
-      sort_order: maxOrder + 1,
+      sort_order: minOrder - 1,
       task: task ?? '', status: '', result_plan: '', risk_help: '',
       due_date: '', priority: '中', progress: 0, note: '',
       completed: false,
