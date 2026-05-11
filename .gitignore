@@ -1,3 +1,7 @@
 *.db
 *.db-shm
 *.db-wal
+todo.json
+data/items.json
+data/users.json
+data/settings.json
