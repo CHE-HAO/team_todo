@@ -216,6 +216,39 @@ test.describe('用戶清單切換', () => {
     await page.locator('#user-list .user-item', { hasText: 'ActiveTester' }).click();
     await expect(page.locator('#user-list .user-item.active')).toContainText('ActiveTester');
   });
+
+  test('自己永遠排在用戶清單第一位', async ({ page }) => {
+    await page.goto('/');
+    await waitConnected(page);
+    await setUsername(page, 'ZzzSortSelf');
+
+    const firstItem = page.locator('#user-list .user-item').first();
+    await expect(firstItem).toContainText('ZzzSortSelf');
+  });
+
+  test('其他用戶依字母順序排列（自己之後）', async ({ page }) => {
+    await page.goto('/');
+    await waitConnected(page);
+    // Use a name that sorts late alphabetically to verify self always comes first
+    await setUsername(page, 'ZzzSortOwner');
+
+    // Inject extra users into the frontend state and re-render to test sorting logic
+    const names = await page.evaluate(() => {
+      allUsers.push({ name: 'BbbOther' }, { name: 'AaaOther' });
+      renderUserList();
+      return [...document.querySelectorAll('#user-list .user-item')]
+        .map(el => el.textContent.replace('我', '').trim());
+    });
+
+    // Self must be first even though 'ZzzSortOwner' sorts late alphabetically
+    expect(names[0]).toBe('ZzzSortOwner');
+
+    // Among the rest, AaaOther must appear before BbbOther
+    const idxAaa = names.indexOf('AaaOther');
+    const idxBbb = names.indexOf('BbbOther');
+    expect(idxAaa).toBeGreaterThan(0);
+    expect(idxBbb).toBeGreaterThan(idxAaa);
+  });
 });
 
 // ── 新增項目 ──────────────────────────────────────────────────────────────────
@@ -234,7 +267,7 @@ test.describe('新增項目', () => {
     expect(after).toBe(before + 1);
   });
 
-  test('新增根項目顯示為「新項目」', async ({ page }) => {
+  test('新增根項目 task 欄位值為空，placeholder 為「新項目」', async ({ page }) => {
     await page.goto('/');
     await waitConnected(page);
     await setUsername(page, 'CreatorB');
@@ -243,7 +276,8 @@ test.describe('新增項目', () => {
     await page.click('#btn-add-root');
     await expect(page.locator('.item-row').first()).toBeVisible({ timeout: 5000 });
     const firstInput = page.locator('.item-row').first().locator('[data-key="task"]');
-    await expect(firstInput).toHaveValue('新項目', { timeout: 5000 });
+    await expect(firstInput).toHaveValue('', { timeout: 5000 });
+    await expect(firstInput).toHaveAttribute('placeholder', '新項目');
   });
 
   test('點選子項目加號新增子項目（數量+1）', async ({ page }) => {
@@ -260,7 +294,7 @@ test.describe('新增項目', () => {
     await expect(page.locator('.item-row')).toHaveCount(before + 1, { timeout: 5000 });
   });
 
-  test('子項目預設文字為「新子項目」', async ({ page }) => {
+  test('新增子項目 task 欄位值為空，placeholder 為「新子項目」', async ({ page }) => {
     await page.goto('/');
     await waitConnected(page);
     await setUsername(page, 'CreatorD');
@@ -271,11 +305,9 @@ test.describe('新增項目', () => {
     await page.locator('.btn-add-child').first().click();
     await expect(page.locator('.item-row').nth(1)).toBeVisible({ timeout: 5000 });
 
-    // Use evaluateAll to get JS values (attribute selector won't work for JS-set values)
-    const values = await page.locator('[data-key="task"]').evaluateAll(
-      els => els.map(e => e.value)
-    );
-    expect(values).toContain('新子項目');
+    const childInput = page.locator('.item-row').nth(1).locator('[data-key="task"]');
+    await expect(childInput).toHaveValue('');
+    await expect(childInput).toHaveAttribute('placeholder', '新子項目');
   });
 });
 

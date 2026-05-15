@@ -304,7 +304,11 @@ document.getElementById('hide-completed').addEventListener('change', e => {
 function renderUserList() {
   const registered = new Set(allUsers.map(u => u.name));
   const extraOwners = [...new Set(allItems.map(i => i.owner))].filter(o => !registered.has(o));
-  const names = [...allUsers.map(u => u.name), ...extraOwners];
+  const allNames = [...allUsers.map(u => u.name), ...extraOwners];
+  const names = [
+    ...(myUsername && allNames.includes(myUsername) ? [myUsername] : []),
+    ...allNames.filter(n => n !== myUsername).sort((a, b) => a.localeCompare(b, 'zh-TW')),
+  ];
 
   if (!currentUser && names.length > 0) currentUser = myUsername || names[0];
 
@@ -526,7 +530,7 @@ function buildRow(item, allUserItems, canEdit, depth) {
 
   // ── Data columns ──
   const dataCols = [
-    { key: 'task',        cls: 'c-task',     type: 'text',   container: taskCell },
+    { key: 'task',        cls: 'c-task',     type: 'text',   container: taskCell, placeholder: item.parent_id ? '新子項目' : '新項目' },
     { key: 'status',      cls: 'c-status',   type: 'text'   },
     { key: 'result_plan', cls: 'c-result',   type: 'text'   },
     { key: 'risk_help',   cls: 'c-risk',     type: 'text'   },
@@ -556,6 +560,7 @@ function buildRow(item, allUserItems, canEdit, depth) {
         input = document.createElement('input');
         input.type = col.type;
         input.value = item[col.key] ?? '';
+        if (col.placeholder) input.placeholder = col.placeholder;
         if (col.type === 'number') { input.min = 0; input.max = 100; }
       }
       input.dataset.key = col.key;
@@ -647,8 +652,8 @@ function showTransfer(btn, item) {
 
 // ── Actions ─────────────────────────────────────────────────────────────────
 
-function addRootItem() { send({ type: 'create_item', owner: currentUser, parent_id: null,    task: '新項目'   }); }
-function addChild(pid, owner) { send({ type: 'create_item', owner, parent_id: pid, task: '新子項目' }); }
+function addRootItem() { send({ type: 'create_item', owner: currentUser, parent_id: null, task: '' }); }
+function addChild(pid, owner) { send({ type: 'create_item', owner, parent_id: pid, task: '' }); }
 
 function deleteItem(id, task) {
   const hasKids = allItems.some(i => i.parent_id === id);
